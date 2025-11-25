@@ -4,14 +4,11 @@
 # November 25, 2025
 
 """
-This program ingests multiple Wisconsin pedestrian-crash datasets, applies
-reproducible preprocessing (standardizing columns, parsing dates, deriving time
-fields and selected flag features), and prints numerical summaries that verify
-data consistency. It also creates basic severity flags and provides simple,
-illustrative scaffolding for three machine learning analyses (K-means clustering,
-logistic regression, and decision trees). The code is designed as a modular,
-stand-alone preprocessing and analysis step that establishes a clean foundation
-for later, more detailed modeling and visualization.
+Ingest multiple Wisconsin pedestrian-crash datasets, apply a consistent
+preprocessing pipeline (standardized columns, parsed dates, derived time
+fields and selected flag features), generate summary outputs, and run a
+few example machine learning models (K-means, logistic regression, and a
+decision tree) as a starting point for further analysis.
 """
 
 # -----------------------------------------------------------------
@@ -22,7 +19,6 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
-# Machine learning imports (for milestone-level analyses)
 from sklearn.cluster import KMeans
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
@@ -35,10 +31,9 @@ from sklearn.metrics import classification_report, confusion_matrix, roc_auc_sco
 # ---------------------------------------
 
 """
-Load seven pedestrian crash datasets (statewide, five regions, and Milwaukee County)
-using Pandas. Each dataset represents 2001–2024 crash records. This step verifies
-successful ingestion by printing the shape of each DataFrame and confirming that the
-structures are consistent across files.
+All seven datasets are loaded into a dictionary keyed by region name.
+This makes it easier to apply consistent preprocessing and aggregate
+results by region later.
 """
 
 def load_csvs(base: Path) -> dict:
@@ -51,7 +46,10 @@ def load_csvs(base: Path) -> dict:
         "NW":         base / "PedestrianCrashes_Wisconsin_NWRegion_2001-2024.csv",
         "Milwaukee":  base / "PedestrianCrashes_Wisconsin_MilwaukeeCounty_2001-2024.csv",
     }
+
     dfs = {k: pd.read_csv(v, low_memory=False) for k, v in files.items()}
+
+    # Basic sanity check: print shape for each dataset
     for k, d in dfs.items():
         print(f"{k:<10} -> {d.shape}")
     return dfs
@@ -62,25 +60,41 @@ def load_csvs(base: Path) -> dict:
 # ---------------------------------------------
 
 """
-Prepare each dataset for analysis. Standardize column names, create a parsed
-`crash_date` column, and derive basic time fields (year, month, day_of_week).
-Add driver-age flags (`flag_teen` from TEENDRVR; `flag_65plus` from 65+DRVR),
-a simple `is_weekend` indicator, and a severity flag `is_fatal` based on INJSVR.
-Records are then filtered to the years 2010–2024 to match the project scope.
+The cleaning pipeline is modular and applied in a fixed sequence:
+
+    normalize_columns  → consistent variable naming
+    parse_crash_date   → construct a datetime column
+    add_time_columns   → derive (year, month, day_of_week)
+    add_driver_age_flags
+    add_weekend_flag
+    add_severity_flag  → binary fatality indicator
+    filter_year_range  → restrict to 2010–2024
+
+This structure makes the transformations explicit and easier to extend.
 """
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize column names (strip, lower, replace spaces with underscores)."""
     out = df.copy()
     out.columns = [c.strip().lower().replace(" ", "_") for c in out.columns]
     return out
 
+
 def parse_crash_date(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Heuristically identify a crash date column and parse it to datetime.
+
+    If multiple date-like columns exist, the first match is used.
+    If none are found, crash_date is set to NaT.
+    """
     out = df.copy()
     candidates = [c for c in out.columns if "date" in c or "crash" in c or c.endswith("_dt")]
     out["crash_date"] = pd.to_datetime(out[candidates[0]], errors="coerce") if candidates else pd.NaT
     return out
 
+
 def add_time_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Derive year, month, and day_of_week from the crash_date column."""
     out = df.copy()
     dt = out["crash_date"]
     out["year"] = dt.dt.year
@@ -88,15 +102,23 @@ def add_time_columns(df: pd.DataFrame) -> pd.DataFrame:
     out["day_of_week"] = dt.dt.dayofweek  # Mon=0..Sun=6
     return out
 
+
 def add_driver_age_flags(df: pd.DataFrame) -> pd.DataFrame:
     """
     Create driver-age indicator variables from existing columns:
-      - flag_teen: 1 if TEENDRVR indicates a teen driver; else 0
+      - flag_teen:   1 if TEENDRVR indicates a teen driver; else 0
       - flag_65plus: 1 if 65+DRVR indicates a 65+ driver; else 0
-    Handles '1'/'Y'/'YES' variants; defaults to 0 if a column is missing.
+
+    Handles variants like '1', 'Y', 'YES' as true values and defaults to 0
+    if the column is not present.
     """
     out = df.copy()
-    cols = {c.lower().strip().replace(" ", "").replace("+", "plus"): c for c in out.columns}
+
+    # Map normalized keys back to original column names
+    cols = {
+        c.lower().strip().replace(" ", "").replace("+", "plus"): c
+        for c in out.columns
+    }
 
     teen_col = cols.get("teendrvr")
     older_col = cols.get("65plusdrvr")
@@ -113,17 +135,22 @@ def add_driver_age_flags(df: pd.DataFrame) -> pd.DataFrame:
 
     return out
 
+
 def add_weekend_flag(df: pd.DataFrame) -> pd.DataFrame:
+    """Add is_weekend = 1 for Saturday/Sunday; otherwise 0."""
     out = df.copy()
     out["is_weekend"] = out["day_of_week"].isin([5, 6]).astype(int)
     return out
 
+
 def add_severity_flag(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Create a simple binary severity indicator:
+    Create a binary severity indicator:
+
       - is_fatal = 1 if INJSVR == 'K' (fatal)
       - is_fatal = 0 otherwise
-    Assumes INJSVR becomes `injsvr` after normalization.
+
+    Assumes INJSVR has become `injsvr` after column normalization.
     """
     out = df.copy()
     if "injsvr" in out.columns:
@@ -131,13 +158,17 @@ def add_severity_flag(df: pd.DataFrame) -> pd.DataFrame:
             out["injsvr"].astype(str).str.strip().str.upper() == "K"
         ).astype(int)
     else:
-        # If INJSVR is missing, fill with NaN so we can easily drop later.
+        # If INJSVR is missing, fill with NaN so rows can be dropped later.
         out["is_fatal"] = np.nan
     return out
 
+
 def filter_year_range(df: pd.DataFrame, start: int = 2010, end: int = 2024) -> pd.DataFrame:
     """
-    Filter the dataset to the given inclusive year range.
+    Filter the dataset to a given inclusive year range.
+
+    Pre-2010 records are excluded because only fatalities were recorded,
+    which would bias severity-related analysis.
     """
     out = df.copy()
     if "year" in out.columns:
@@ -145,7 +176,12 @@ def filter_year_range(df: pd.DataFrame, start: int = 2010, end: int = 2024) -> p
         return out.loc[mask]
     return out
 
+
 def clean_one(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Apply the full preprocessing pipeline to a single DataFrame and
+    return the cleaned result.
+    """
     out = normalize_columns(df)
     out = parse_crash_date(out)
     out = add_time_columns(out)
@@ -161,9 +197,8 @@ def clean_one(df: pd.DataFrame) -> pd.DataFrame:
 # -----------------------------------------------------------------
 
 """
-Summarize crashes by calendar year using Pandas `groupby`. This provides a quick
-view of temporal trends and supports later modeling or extended summaries.
-Yearly counts are exported to CSV for reproducibility.
+Compute annual crash counts for each dataset. This provides a simple
+time-series summary that can be reused in plots or tables.
 """
 
 def yearly_counts(df: pd.DataFrame) -> pd.DataFrame:
@@ -177,9 +212,9 @@ def yearly_counts(df: pd.DataFrame) -> pd.DataFrame:
 # -----------------------------------------------------------------
 
 """
-Illustrative flag-based rollups: compute the yearly percentage of crashes involving
-teen and 65+ drivers for the statewide dataset. This is an example summary only 
-and is printed as a preview rather than saved separately.
+Compute yearly rollups for age-related flags. This produces a compact table
+with teen and 65+ driver participation and rates by year for the statewide
+dataset.
 """
 
 def minimal_flag_rollups(df: pd.DataFrame) -> pd.DataFrame:
@@ -201,9 +236,9 @@ def minimal_flag_rollups(df: pd.DataFrame) -> pd.DataFrame:
 # -----------------------------------------------------------------
 
 """
-Generate descriptive statistics for derived numeric columns (e.g., year, month,
-flags). Use `DataFrame.describe()` to verify ranges, detect missing values, and
-confirm that derived features behave as expected. Print for **all** datasets.
+Generate descriptive statistics for derived numeric columns (year, month,
+day_of_week, and flags). This is useful for validating ranges and checking
+for unexpected values.
 """
 
 def quick_describe(name: str, df: pd.DataFrame) -> None:
@@ -222,19 +257,22 @@ def quick_describe(name: str, df: pd.DataFrame) -> None:
 # -----------------------------------------------------------------
 
 """
-Numerical summaries of yearly crash counts for each dataset.
+Summarize yearly crash counts for each dataset to get a quick view of
+crash frequency and variability over time.
 """
 
 def print_yearly_summaries(yr_dict: dict) -> None:
-    """Print min, max, mean crash counts for each dataset."""
+    """Print basic statistics for yearly crash counts for each dataset."""
     print("\n--- Yearly Crash Count Summaries ---")
     for name, tbl in yr_dict.items():
         if tbl.empty:
             print(f"{name:<10} — no data")
             continue
         stats = tbl["crash_count"].describe()
-        print(f"{name:<10}: years {int(tbl['year'].min())}-{int(tbl['year'].max())}, "
-              f"mean={stats['mean']:.1f}, min={stats['min']:.0f}, max={stats['max']:.0f}")
+        print(
+            f"{name:<10}: years {int(tbl['year'].min())}-{int(tbl['year'].max())}, "
+            f"mean={stats['mean']:.1f}, min={stats['min']:.0f}, max={stats['max']:.0f}"
+        )
 
 
 # -----------------------------------------------------------------
@@ -243,7 +281,7 @@ def print_yearly_summaries(yr_dict: dict) -> None:
 
 """
 Combine all cleaned datasets into a single DataFrame with a `region` label.
-This is used for statewide modeling as well as region-aware analysis.
+This supports statewide modeling as well as region-specific analysis.
 """
 
 def combine_clean_datasets(clean_dict: dict) -> pd.DataFrame:
@@ -261,17 +299,21 @@ def combine_clean_datasets(clean_dict: dict) -> pd.DataFrame:
 # -----------------------------------------------------------------
 
 """
-These functions provide milestone-level implementations for three machine learning
-methods: K-means clustering, logistic regression, and decision trees.
+The following functions implement basic versions of three machine learning
+methods using a small set of engineered features:
 
-They are intentionally simple and can be extended later with more features,
-tuning, and visualization.
+    - K-means clustering
+    - Logistic regression
+    - Decision tree classifier
+
+These examples can be extended with additional features, tuning, and
+visualization as the analysis matures.
 """
 
 def run_kmeans_example(df: pd.DataFrame, n_clusters: int = 4) -> None:
     """
-    Run a simple K-means clustering on a small set of numeric features and print
-    cluster sizes and fatality rates per cluster.
+    Run K-means clustering on available numeric features and print cluster
+    sizes and mean fatality rates per cluster.
     """
     print("\n--- K-means clustering (illustrative) ---")
     feature_cols = [c for c in ["year", "is_weekend", "flag_teen", "flag_65plus", "is_fatal"]
@@ -305,8 +347,8 @@ def run_kmeans_example(df: pd.DataFrame, n_clusters: int = 4) -> None:
 
 def run_logistic_regression_example(df: pd.DataFrame) -> None:
     """
-    Run a simple logistic regression to predict is_fatal using a few engineered
-    features. Prints basic classification metrics.
+    Run a simple logistic regression to predict is_fatal using a small
+    feature set. Prints basic classification metrics and ROC AUC.
     """
     print("\n--- Logistic regression (illustrative) ---")
     required = ["is_fatal"]
@@ -329,7 +371,7 @@ def run_logistic_regression_example(df: pd.DataFrame) -> None:
     X = tmp[available_features]
     y = tmp["is_fatal"].astype(int)
 
-    # Handle rare case where all y are 0 or 1
+    # Guard against degenerate target
     if y.nunique() < 2:
         print("Target variable has only one class; cannot fit logistic regression.")
         return
@@ -360,8 +402,8 @@ def run_logistic_regression_example(df: pd.DataFrame) -> None:
 
 def run_decision_tree_example(df: pd.DataFrame, max_depth: int = 5) -> None:
     """
-    Run a simple decision tree classifier to predict is_fatal using the same
-    small feature set. Prints feature importances.
+    Run a simple decision tree classifier to predict is_fatal using the
+    same feature set as the logistic regression example.
     """
     print("\n--- Decision tree (illustrative) ---")
     required = ["is_fatal"]
@@ -384,7 +426,6 @@ def run_decision_tree_example(df: pd.DataFrame, max_depth: int = 5) -> None:
     X = tmp[available_features]
     y = tmp["is_fatal"].astype(int)
 
-    # Handle rare case where all y are 0 or 1
     if y.nunique() < 2:
         print("Target variable has only one class; cannot fit decision tree.")
         return
@@ -412,9 +453,19 @@ def run_decision_tree_example(df: pd.DataFrame, max_depth: int = 5) -> None:
 # Main Driver
 # -------------------------
 
+"""
+Run the full pipeline:
+
+    - load all datasets
+    - clean and filter records
+    - compute yearly summaries and save them
+    - print basic descriptive statistics
+    - combine datasets for modeling
+    - run example K-means, logistic regression, and decision tree analyses
+"""
+
 if __name__ == "__main__":
-    # NOTE: For Homework 6 submission, this should ideally be a relative path
-    # from your project root to the datasets directory.
+    # TODO: convert to a project-relative path if needed
     base = Path(
         r"C:/Users/ajmic/OneDrive/Documents/A_School/UWM/Fall2025/"
         r"COMPSCI715_ProgrammingMachineLearning/Homeworks/Homework5/Datasets/WisconsinTopsLabData"
@@ -450,7 +501,7 @@ if __name__ == "__main__":
     combined = combine_clean_datasets(clean)
     print(f"\nCombined dataset shape (all regions, 2010–2024): {combined.shape}")
 
-    # Part 8 — simple ML analyses (statewide example; can also use `combined`)
+    # Part 8 — simple ML analyses (statewide example)
     run_kmeans_example(statewide, n_clusters=4)
     run_logistic_regression_example(statewide)
     run_decision_tree_example(statewide, max_depth=5)
