@@ -20,6 +20,8 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
+import matplotlib.pyplot as plt
+
 from sklearn.cluster import KMeans
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
@@ -32,7 +34,6 @@ from sklearn.metrics import (
     accuracy_score,
     precision_recall_fscore_support,
 )
-
 
 # ---------------------------------------
 # Part 1. Load and Inspect the Datasets
@@ -105,14 +106,10 @@ def parse_crash_date(df: pd.DataFrame) -> pd.DataFrame:
     """
     out = df.copy()
     candidates = [
-        c
-        for c in out.columns
-        if "date" in c or "crash" in c or c.endswith("_dt")
+        c for c in out.columns if "date" in c or "crash" in c or c.endswith("_dt")
     ]
     out["crash_date"] = (
-        pd.to_datetime(out[candidates[0]], errors="coerce")
-        if candidates
-        else pd.NaT
+        pd.to_datetime(out[candidates[0]], errors="coerce") if candidates else pd.NaT
     )
     return out
 
@@ -161,9 +158,7 @@ def add_time_of_day_features(df: pd.DataFrame) -> pd.DataFrame:
 
     out["hour"] = h
 
-    out["is_night"] = out["hour"].isin(
-        [21, 22, 23, 0, 1, 2, 3, 4, 5]
-    ).astype(int)
+    out["is_night"] = out["hour"].isin([21, 22, 23, 0, 1, 2, 3, 4, 5]).astype(int)
     out["is_peak"] = out["hour"].isin([7, 8, 9, 16, 17, 18]).astype(int)
 
     return out
@@ -183,25 +178,18 @@ def add_driver_age_flags(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
 
     # Map normalized keys back to original column names
-    cols = {
-        c.lower().strip().replace(" ", "").replace("+", "plus"): c
-        for c in out.columns
-    }
+    cols = {c.lower().strip().replace(" ", "").replace("+", "plus"): c for c in out.columns}
 
     teen_col = cols.get("teendrvr")
     older_col = cols.get("65plusdrvr")
 
     if teen_col:
-        out["flag_teen"] = (
-            out[teen_col].astype(str).str.upper().isin(["1", "Y", "YES"])
-        ).astype(int)
+        out["flag_teen"] = out[teen_col].astype(str).str.upper().isin(["1", "Y", "YES"]).astype(int)
     else:
         out["flag_teen"] = 0
 
     if older_col:
-        out["flag_65plus"] = (
-            out[older_col].astype(str).str.upper().isin(["1", "Y", "YES"])
-        ).astype(int)
+        out["flag_65plus"] = out[older_col].astype(str).str.upper().isin(["1", "Y", "YES"]).astype(int)
     else:
         out["flag_65plus"] = 0
 
@@ -232,9 +220,7 @@ def add_severity_flag(df: pd.DataFrame) -> pd.DataFrame:
     """
     out = df.copy()
     if "injsvr" in out.columns:
-        out["is_fatal"] = (
-            out["injsvr"].astype(str).str.strip().str.upper() == "K"
-        ).astype(int)
+        out["is_fatal"] = (out["injsvr"].astype(str).str.strip().str.upper() == "K").astype(int)
     else:
         out["is_fatal"] = np.nan
     return out
@@ -317,9 +303,7 @@ def add_crash_context_flags(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def filter_year_range(
-    df: pd.DataFrame, start: int = 2010, end: int = 2024
-) -> pd.DataFrame:
+def filter_year_range(df: pd.DataFrame, start: int = 2010, end: int = 2024) -> pd.DataFrame:
     """
     Filter records to an inclusive year range.
 
@@ -376,11 +360,7 @@ def yearly_counts(df: pd.DataFrame) -> pd.DataFrame:
     sorted by year.
     """
     t = df.dropna(subset=["year"])
-    grp = (
-        t.groupby("year", as_index=False)
-        .size()
-        .rename(columns={"size": "crash_count"})
-    )
+    grp = t.groupby("year", as_index=False).size().rename(columns={"size": "crash_count"})
     return grp.sort_values("year")
 
 
@@ -405,11 +385,7 @@ def minimal_flag_rollups(df: pd.DataFrame) -> pd.DataFrame:
     t["any"] = 1
     out = (
         t.groupby("year", as_index=False)
-        .agg(
-            total=("any", "sum"),
-            teen=("flag_teen", "sum"),
-            older65=("flag_65plus", "sum"),
-        )
+        .agg(total=("any", "sum"), teen=("flag_teen", "sum"), older65=("flag_65plus", "sum"))
     )
     out["teen_rate"] = (out["teen"] / out["total"]).round(4)
     out["older65_rate"] = (out["older65"] / out["total"]).round(4)
@@ -517,17 +493,7 @@ def run_kmeans_example(df: pd.DataFrame, n_clusters: int = 4) -> None:
     """
     print("\n--- K-means clustering (illustrative) ---")
 
-    feature_cols = [
-        c
-        for c in [
-            "year",
-            "is_weekend",
-            "flag_teen",
-            "flag_65plus",
-            "is_fatal",
-        ]
-        if c in df.columns
-    ]
+    feature_cols = [c for c in ["year", "is_weekend", "flag_teen", "flag_65plus", "is_fatal"] if c in df.columns]
 
     if len(feature_cols) < 2:
         print("Not enough numeric features available for K-means.")
@@ -572,7 +538,6 @@ def run_logistic_regression_example(df: pd.DataFrame) -> None:
 
     required = ["is_fatal"]
     feature_candidates = ["is_weekend", "flag_teen", "flag_65plus", "year"]
-
     available = [c for c in feature_candidates if c in df.columns]
 
     if not all(col in df.columns for col in required):
@@ -591,7 +556,6 @@ def run_logistic_regression_example(df: pd.DataFrame) -> None:
     X = tmp[available]
     y = tmp["is_fatal"].astype(int)
 
-    # Handle the case where all records fall into a single class
     if y.nunique() < 2:
         print("Target variable has only one class; cannot fit model.")
         return
@@ -631,7 +595,6 @@ def run_decision_tree_example(df: pd.DataFrame, max_depth: int = 5) -> None:
 
     required = ["is_fatal"]
     feature_candidates = ["is_weekend", "flag_teen", "flag_65plus", "year"]
-
     available = [c for c in feature_candidates if c in df.columns]
 
     if not all(col in df.columns for col in required):
@@ -710,9 +673,7 @@ def build_model_dataset(
     else:
         target_col = "severity_ord"
         if target_col not in df.columns:
-            raise ValueError(
-                "Target column 'severity_ord' not found in DataFrame."
-            )
+            raise ValueError("Target column 'severity_ord' not found in DataFrame.")
 
     base_features = [
         "year",
@@ -743,8 +704,6 @@ def build_model_dataset(
     )
 
     all_candidates = base_features + context_features
-
-    # Keep only those actually present
     feature_cols = [c for c in all_candidates if c in df.columns]
 
     if not feature_cols:
@@ -756,7 +715,6 @@ def build_model_dataset(
 
     X = tmp[feature_cols]
     y = tmp[target_col]
-
     return X, y
 
 
@@ -781,10 +739,8 @@ def evaluate_binary_classifier(
       - roc_auc (if available, else NaN)
     """
     model.fit(X_train, y_train)
-
     y_pred = model.predict(X_test)
 
-    # Some models provide predict_proba, others only decision_function or none.
     try:
         y_prob = model.predict_proba(X_test)[:, 1]
         auc = roc_auc_score(y_test, y_prob)
@@ -804,14 +760,7 @@ def evaluate_binary_classifier(
         zero_division=0,
     )
 
-    return {
-        "model_name": name,
-        "accuracy": acc,
-        "precision": prec,
-        "recall": rec,
-        "f1": f1,
-        "roc_auc": auc,
-    }
+    return {"model_name": name, "accuracy": acc, "precision": prec, "recall": rec, "f1": f1, "roc_auc": auc}
 
 
 def compare_classifiers_on_fatality(df: pd.DataFrame) -> pd.DataFrame:
@@ -832,16 +781,12 @@ def compare_classifiers_on_fatality(df: pd.DataFrame) -> pd.DataFrame:
     print("\n--- Model comparison on `is_fatal` (binary) ---")
 
     try:
-        X, y = build_model_dataset(
-            df, use_context_flags=True, restrict_to_fatal_binary=True
-        )
+        X, y = build_model_dataset(df, use_context_flags=True, restrict_to_fatal_binary=True)
     except ValueError as e:
         print(f"Cannot build dataset: {e}")
         return pd.DataFrame()
 
-    # Ensure y is int 0/1
     y = y.astype(int)
-
     if y.nunique() < 2:
         print("Target variable has only one class; cannot compare models.")
         return pd.DataFrame()
@@ -850,52 +795,39 @@ def compare_classifiers_on_fatality(df: pd.DataFrame) -> pd.DataFrame:
         X, y, test_size=0.3, random_state=42, stratify=y
     )
 
-    # Define models
     models = [
         ("Logistic (baseline)", LogisticRegression(max_iter=1000)),
-        (
-            "Logistic (balanced)",
-            LogisticRegression(max_iter=1000, class_weight="balanced"),
-        ),
-        (
-            "RandomForest (balanced)",
-            RandomForestClassifier(
-                n_estimators=200,
-                max_depth=None,
-                min_samples_split=5,
-                class_weight="balanced",
-                random_state=42,
-                n_jobs=-1,
-            ),
-        ),
+        ("Logistic (balanced)", LogisticRegression(max_iter=1000, class_weight="balanced")),
+        ("RandomForest (balanced)",
+         RandomForestClassifier(
+             n_estimators=200,
+             max_depth=None,
+             min_samples_split=5,
+             class_weight="balanced",
+             random_state=42,
+             n_jobs=-1,
+         )),
         ("GradientBoosting", GradientBoostingClassifier(random_state=42)),
     ]
 
     results = []
     for name, model in models:
         print(f"\nFitting {name} ...")
-        metrics = evaluate_binary_classifier(
-            name, model, X_train, X_test, y_train, y_test
-        )
+        metrics = evaluate_binary_classifier(name, model, X_train, X_test, y_train, y_test)
         results.append(metrics)
 
-        # Print a quick confusion matrix for each model
         model.fit(X_train, y_train)
         y_pred = model.predict(X_test)
         print("Confusion matrix:")
         print(confusion_matrix(y_test, y_pred))
 
     res_df = pd.DataFrame(results)
-    # Nicely formatted output
     print("\nModel comparison (higher is better for all metrics):")
     print(res_df.round(4).sort_values("recall", ascending=False))
-
     return res_df
 
 
-def run_multiclass_severity_tree(
-    df: pd.DataFrame, max_depth: int = 6
-) -> None:
+def run_multiclass_severity_tree(df: pd.DataFrame, max_depth: int = 6) -> None:
     """
     Train a decision tree to predict the ordinal injury severity level (0–4).
 
@@ -905,16 +837,11 @@ def run_multiclass_severity_tree(
     print("\n--- Multiclass severity decision tree (ordinal severity_ord) ---")
 
     try:
-        X, y = build_model_dataset(
-            df,
-            use_context_flags=True,
-            restrict_to_fatal_binary=False,
-        )
+        X, y = build_model_dataset(df, use_context_flags=True, restrict_to_fatal_binary=False)
     except ValueError as e:
         print(f"Cannot build dataset: {e}")
         return
 
-    # Drop rows where severity is missing
     mask = ~y.isna()
     X = X.loc[mask]
     y = y.loc[mask].astype(int)
@@ -940,13 +867,6 @@ def run_kmeans_with_context(df: pd.DataFrame, n_clusters: int = 5) -> None:
     """
     Run a K-means clustering experiment using extended engineered features.
 
-    Uses:
-      - year, month, day_of_week
-      - hour, is_night, is_peak
-      - is_weekend
-      - flag_teen, flag_65plus
-      - flag_speed_related, flag_impaired, flag_hit_and_run, flag_winter_road
-
     Prints cluster sizes and mean fatality rate per cluster, plus
     key contextual shares.
     """
@@ -967,7 +887,6 @@ def run_kmeans_with_context(df: pd.DataFrame, n_clusters: int = 5) -> None:
         "flag_hit_and_run",
         "flag_winter_road",
     ]
-
     feature_cols = [c for c in feature_cols if c in df.columns]
 
     if len(feature_cols) < 3:
@@ -1002,6 +921,150 @@ def run_kmeans_with_context(df: pd.DataFrame, n_clusters: int = 5) -> None:
     print(summary)
 
 
+# -----------------------------------------------------------------
+# Part 10. Visualizations (Saved to outputs/)
+# -----------------------------------------------------------------
+
+
+def _save_fig(outdir: Path, filename: str) -> None:
+    """Save current matplotlib figure as a high-res PNG and close it."""
+    outpath = outdir / filename
+    plt.tight_layout()
+    plt.savefig(outpath, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"Saved figure: {outpath}")
+
+
+def plot_yearly_crashes_statewide(clean_statewide: pd.DataFrame, outdir: Path) -> None:
+    """Figure 1: Yearly crash counts (Statewide)."""
+    tbl = yearly_counts(clean_statewide)
+    plt.figure()
+    plt.plot(tbl["year"], tbl["crash_count"])
+    plt.title("Statewide Pedestrian Crashes by Year (2010–2024)")
+    plt.xlabel("Year")
+    plt.ylabel("Number of Pedestrian Crashes")
+    _save_fig(outdir, "fig01_yearly_crashes_statewide.png")
+
+
+def plot_yearly_crashes_by_region(clean_dict: dict, outdir: Path) -> None:
+    """Figure 2: Yearly crash counts by region (multiple lines)."""
+    plt.figure()
+    for region, df in clean_dict.items():
+        tbl = yearly_counts(df)
+        if not tbl.empty:
+            plt.plot(tbl["year"], tbl["crash_count"], label=region)
+    plt.title("Pedestrian Crashes by Year and Region (2010–2024)")
+    plt.xlabel("Year")
+    plt.ylabel("Number of Pedestrian Crashes")
+    plt.legend()
+    _save_fig(outdir, "fig02_yearly_crashes_by_region.png")
+
+
+def plot_driver_age_rates(clean_statewide: pd.DataFrame, outdir: Path) -> None:
+    """Figure 3: Teen vs 65+ driver involvement rates by year."""
+    rates = minimal_flag_rollups(clean_statewide)
+    plt.figure()
+    plt.plot(rates["year"], rates["teen_rate"], label="Teen driver involved")
+    plt.plot(rates["year"], rates["older65_rate"], label="65+ driver involved")
+    plt.title("Teen vs. 65+ Driver Involvement Rates (Statewide, 2010–2024)")
+    plt.xlabel("Year")
+    plt.ylabel("Share of Crashes")
+    plt.legend()
+    _save_fig(outdir, "fig03_teen_vs_65plus_rates.png")
+
+
+def plot_severity_distribution(clean_statewide: pd.DataFrame, outdir: Path) -> None:
+    """Figure 4: Distribution of injury severity (ordinal)."""
+    if "severity_ord" not in clean_statewide.columns:
+        print("severity_ord not available; skipping severity distribution plot.")
+        return
+
+    s = clean_statewide["severity_ord"].dropna().astype(int)
+    counts = s.value_counts().sort_index()
+
+    labels = {
+        0: "O (PDO)",
+        1: "C (Possible)",
+        2: "B (Non-incap.)",
+        3: "A (Incap.)",
+        4: "K (Fatal)",
+    }
+    x = list(counts.index)
+    xlabels = [labels.get(i, str(i)) for i in x]
+
+    plt.figure()
+    plt.bar(range(len(x)), counts.values)
+    plt.title("Distribution of Injury Severity (Statewide, 2010–2024)")
+    plt.xlabel("Severity Level")
+    plt.ylabel("Number of Crashes")
+    plt.xticks(range(len(x)), xlabels, rotation=20, ha="right")
+    _save_fig(outdir, "fig04_severity_distribution.png")
+
+
+def plot_model_comparison(model_results: pd.DataFrame, outdir: Path) -> None:
+    """Figure 5: Model comparison on is_fatal (Recall and F1)."""
+    if model_results is None or model_results.empty:
+        print("No model_results available; skipping model comparison plot.")
+        return
+
+    df = model_results.copy()
+    df = df.set_index("model_name")[["recall", "f1"]].sort_values("recall", ascending=False)
+
+    plt.figure()
+    x = np.arange(len(df.index))
+    width = 0.35
+    plt.bar(x - width / 2, df["recall"].values, width, label="Recall (Fatal=1)")
+    plt.bar(x + width / 2, df["f1"].values, width, label="F1 (Fatal=1)")
+    plt.title("Model Performance Comparison on Fatality Prediction")
+    plt.xlabel("Model")
+    plt.ylabel("Score")
+    plt.xticks(x, df.index, rotation=20, ha="right")
+    plt.ylim(0, 1)
+    plt.legend()
+    _save_fig(outdir, "fig05_model_comparison_recall_f1.png")
+
+
+def plot_random_forest_feature_importance(clean_statewide: pd.DataFrame, outdir: Path) -> None:
+    """Figure 6: Random Forest feature importance for is_fatal prediction."""
+    try:
+        X, y = build_model_dataset(clean_statewide, use_context_flags=True, restrict_to_fatal_binary=True)
+    except ValueError as e:
+        print(f"Cannot build dataset for feature importance: {e}")
+        return
+
+    y = y.astype(int)
+    if y.nunique() < 2:
+        print("Target has only one class; skipping feature importance plot.")
+        return
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42, stratify=y
+    )
+
+    rf = RandomForestClassifier(
+        n_estimators=300,
+        max_depth=None,
+        min_samples_split=5,
+        class_weight="balanced",
+        random_state=42,
+        n_jobs=-1,
+    )
+    rf.fit(X_train, y_train)
+
+    importances = (
+        pd.Series(rf.feature_importances_, index=X.columns)
+        .sort_values(ascending=False)
+        .head(12)
+    )
+
+    plt.figure()
+    plt.barh(importances.index[::-1], importances.values[::-1])
+    plt.title("Top Feature Importances (Random Forest, Fatality Prediction)")
+    plt.xlabel("Importance")
+    plt.ylabel("Feature")
+    _save_fig(outdir, "fig06_rf_feature_importance.png")
+
+
 # -------------------------
 # Main Driver
 # -------------------------
@@ -1016,6 +1079,7 @@ Run the full pipeline:
     - combine datasets for modeling
     - run example K-means, logistic regression, and decision tree analyses
     - run additional classifiers and clustering analyses
+    - generate 6 visualizations and save to outputs/
 """
 
 
@@ -1062,9 +1126,7 @@ if __name__ == "__main__":
 
     # Part 7 — combine datasets into one ML-ready table
     combined = combine_clean_datasets(clean)
-    print(
-        f"\nCombined dataset shape (all regions, 2010–2024): {combined.shape}"
-    )
+    print(f"\nCombined dataset shape (all regions, 2010–2024): {combined.shape}")
 
     # Part 8 — original ML examples (using statewide data)
     run_kmeans_example(statewide, n_clusters=4)
@@ -1084,4 +1146,12 @@ if __name__ == "__main__":
     # 9.3 Richer clustering with context features
     run_kmeans_with_context(statewide, n_clusters=5)
 
-    print(f"\nSaved outputs to: {outdir}")
+    # Part 10 — Visualizations (6 figures saved to outputs/)
+    plot_yearly_crashes_statewide(statewide, outdir)
+    plot_yearly_crashes_by_region(clean, outdir)
+    plot_driver_age_rates(statewide, outdir)
+    plot_severity_distribution(statewide, outdir)
+    plot_model_comparison(model_results, outdir)
+    plot_random_forest_feature_importance(statewide, outdir)
+
+    print(f"\nSaved outputs (CSVs + figures) to: {outdir}")
