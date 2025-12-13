@@ -1,92 +1,155 @@
-# Pedestrian Safety ML Project
+# Pedestrian Safety Machine Learning Pipeline (Wisconsin, 2010–2024)
 
-This project analyzes pedestrian crash data from Wisconsin (2010--2024)
-using a custom preprocessing pipeline and several introductory machine
-learning models. The goal is to explore regional crash patterns,
-construct meaningful features, and generate early insights that will
-support a larger predictive and analytical study.
+This project develops an interpretable and reproducible machine learning (ML)
+pipeline to analyze pedestrian crash data from Wisconsin between 2010 and 2024.
+The analysis integrates statewide, regional, and Milwaukee County datasets to
+explore temporal trends, demographic patterns, crash severity, and the
+challenges of predicting rare fatal outcomes.
+
+Rather than optimizing for maximum predictive accuracy, the project emphasizes
+**transparent preprocessing**, **feature engineering**, **class imbalance
+handling**, and **model interpretability**, consistent with contemporary
+transportation safety research.
+
+---
 
 ## Project Structure
 
-    FinalProject/
-    │
-    ├── DataSets/              # Input datasets (7 CSVs: statewide + 5 regions + Milwaukee)
-    ├── outputs/               # All generated results, summaries, and model outputs
-    ├── pedestrian_safety_ml_project.py   # Main Python script (full pipeline)
-    └── README.md              # Project documentation
+```
+FinalProject/
+│
+├── DataSets/                      # Input datasets (7 CSVs; local, not tracked)
+│   ├── PedestrianCrashes_Wisconsin_2001-2024.csv
+│   ├── PedestrianCrashes_Wisconsin_SWRegion_2001-2024.csv
+│   ├── PedestrianCrashes_Wisconsin_SERegion_2001-2024.csv
+│   ├── PedestrianCrashes_Wisconsin_NERegion_2001-2024.csv
+│   ├── PedestrianCrashes_Wisconsin_NCRegion_2001-2024.csv
+│   ├── PedestrianCrashes_Wisconsin_NWRegion_2001-2024.csv
+│   └── PedestrianCrashes_Wisconsin_MilwaukeeCounty_2001-2024.csv
+│
+├── PythonFiles/
+│   └── pedestrian_safety_ml_project.py   # Main pipeline script
+│
+├── outputs/                       # Generated tables and figures (auto-created)
+│   ├── yearly_*.csv
+│   ├── model_comparison_is_fatal.csv
+│   ├── fig01_yearly_crashes_statewide.png
+│   ├── fig02_yearly_crashes_by_region.png
+│   ├── fig03_teen_vs_65plus_rates.png
+│   ├── fig04_severity_distribution.png
+│   ├── fig05_model_comparison_recall_f1.png
+│   └── fig06_rf_feature_importance.png
+│
+└── README.md
+```
 
-## What the Python Pipeline Does
+---
 
-The main script performs the following steps:
+## What the Pipeline Does
 
-1.  **Loads all datasets** (Statewide, SW, SE, NE, NC, NW, Milwaukee
-    County)
-2.  **Standardizes** column names and parses crash dates
-3.  **Builds derived features**, including:
-    -   `year`, `month`, `day_of_week`
-    -   `is_weekend`
-    -   `flag_teen` (teen driver indicator)
-    -   `flag_65plus` (senior driver indicator)
-    -   `is_fatal` (fatal injury severity)
-4.  **Filters records** to the consistent reporting window (2010--2024)
-5.  **Computes yearly crash counts** for each region and saves them to
-    `outputs/`
-6.  **Generates additional summaries**, such as teen vs. 65+ driver
-    involvement
-7.  **Combines all regions** into a single integrated dataset for ML
-    analysis
-8.  **Runs simple baseline ML models**, including:
-    -   K-means clustering\
-    -   Logistic regression\
-    -   Decision tree classifier
+The main Python script executes a full end-to-end workflow:
 
-These models are meant as illustrative baselines and starting points for
-deeper analysis.
+### 1. Data Ingestion
+- Loads **seven pedestrian crash datasets** (statewide, five WisDOT regions,
+  and Milwaukee County)
+- Stores datasets in a dictionary keyed by region name
+
+### 2. Standardized Preprocessing
+- Normalizes column names across datasets
+- Identifies and parses crash date fields
+- Filters records to **2010–2024** to avoid structural severity imbalance
+
+### 3. Feature Engineering
+- Temporal features: year, month, day of week, hour, night/peak indicators
+- Driver demographics: teen and 65+ involvement flags
+- Severity measures: binary fatality and ordinal injury severity
+- Crash context flags (when available): speed, impairment, hit-and-run,
+  winter conditions, vehicle type, construction zones
+
+### 4. Aggregation and Descriptive Analysis
+- Yearly crash counts by region
+- Driver age involvement trends
+- Descriptive statistics for engineered variables
+
+### 5. Machine Learning Analyses
+- K-means clustering (basic and extended feature sets)
+- Logistic regression (baseline and class-weighted)
+- Decision tree classifier
+- Random Forest and Gradient Boosting classifiers
+- Multiclass injury severity modeling
+
+### 6. Model Evaluation and Interpretation
+- Recall-, precision-, and F1-oriented evaluation
+- Threshold tuning for rare fatal outcomes
+- Permutation-based feature importance
+
+### 7. Visualization Outputs
+- Statewide and regional crash trends
+- Injury severity distribution
+- Model performance comparisons
+- Feature importance rankings
+
+All figures and tables are generated programmatically and saved for direct
+inclusion in the final report.
+
+---
 
 ## How to Run
 
-1.  Activate your Conda environment:
+1. Activate your Conda environment:
 
-``` bash
+```bash
 conda activate cs715env
 ```
 
-2.  Navigate to the project directory:
+2. Navigate to the project root:
 
-``` bash
+```bash
 cd path/to/FinalProject
 ```
 
-3.  Run the pipeline:
+3. Run the pipeline:
 
-``` bash
-python pedestrian_safety_ml_project.py
+```bash
+python PythonFiles/pedestrian_safety_ml_project.py
 ```
 
-All results will be saved automatically into:
+All outputs will be written to:
 
-    FinalProject/outputs/
+```
+FinalProject/outputs/
+```
+
+---
 
 ## Dependencies
 
-This project uses the following Python libraries:
+- pandas
+- numpy
+- scikit-learn
+- matplotlib
+- pathlib (standard library)
 
--   pandas\
--   numpy\
--   scikit-learn\
--   pathlib (standard library)
+Install missing packages with:
 
-To install missing packages:
-
-``` bash
-pip install pandas numpy scikit-learn
+```bash
+pip install pandas numpy scikit-learn matplotlib
 ```
+
+---
 
 ## Notes
 
--   The datasets and all outputs are stored locally and are **not
-    included in the repository**.
--   Additional visualizations, modeling techniques, and statistical
-    analysis will be added as the project develops.
--   This README is written to be project-ready and independent of any
-    coursework references.
+- Raw datasets are **not included** in the repository.
+- Outputs are fully reproducible by rerunning the script.
+- Predictive performance is constrained primarily by feature availability.
+- The pipeline is designed for future extension with roadway, spatial, and
+  environmental data.
+
+---
+
+## Author
+
+**Aaron Michelson**  
+Final Project — Programming for Machine Learning  
+University of Wisconsin–Milwaukee
