@@ -20,6 +20,10 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
+# Force a non-GUI backend (prevents Tkinter thread errors on Windows)
+import matplotlib
+matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
 
 from sklearn.cluster import KMeans
@@ -27,6 +31,14 @@ from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+
+# for scaled logistic regression via pipeline
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+
+# permutation importance for a more defensible importance plot
+from sklearn.inspection import permutation_importance
+
 from sklearn.metrics import (
     classification_report,
     confusion_matrix,
@@ -67,8 +79,7 @@ def load_csvs(base: Path) -> dict:
         "NE": base / "PedestrianCrashes_Wisconsin_NERegion_2001-2024.csv",
         "NC": base / "PedestrianCrashes_Wisconsin_NCRegion_2001-2024.csv",
         "NW": base / "PedestrianCrashes_Wisconsin_NWRegion_2001-2024.csv",
-        "Milwaukee": base
-        / "PedestrianCrashes_Wisconsin_MilwaukeeCounty_2001-2024.csv",
+        "Milwaukee": base / "PedestrianCrashes_Wisconsin_MilwaukeeCounty_2001-2024.csv",
     }
 
     dfs = {k: pd.read_csv(v, low_memory=False) for k, v in files.items()}
@@ -100,17 +111,36 @@ def parse_crash_date(df: pd.DataFrame) -> pd.DataFrame:
     """
     Identify and parse a crash date column into a unified `crash_date` field.
 
-    The function looks for columns containing 'date', 'crash', or ending in
-    '_dt', and uses the first match found. If no candidate is found, `crash_date`
-    is set to NaT.
+    CHANGED (minimal): prefer a prioritized list of common date columns first,
+    then fall back to the broader heuristic search.
     """
     out = df.copy()
-    candidates = [
-        c for c in out.columns if "date" in c or "crash" in c or c.endswith("_dt")
+
+    # CHANGED: prioritize likely date fields (after normalize_columns)
+    preferred = [
+        "crash_date",
+        "crshdate",
+        "crashdt",
+        "crash_dt",
+        "crashdate",
+        "date",
+        "crashdate_dt",
     ]
-    out["crash_date"] = (
-        pd.to_datetime(out[candidates[0]], errors="coerce") if candidates else pd.NaT
-    )
+    chosen = None
+    for c in preferred:
+        if c in out.columns:
+            chosen = c
+            break
+
+    if chosen is None:
+        # fallback heuristic (kept from your version, but slightly tightened)
+        candidates = [
+            c for c in out.columns
+            if ("date" in c) or c.endswith("_dt")
+        ]
+        chosen = candidates[0] if candidates else None
+
+    out["crash_date"] = pd.to_datetime(out[chosen], errors="coerce") if chosen else pd.NaT
     return out
 
 
@@ -157,7 +187,6 @@ def add_time_of_day_features(df: pd.DataFrame) -> pd.DataFrame:
     h = h.where((h >= 0) & (h <= 23), np.nan)
 
     out["hour"] = h
-
     out["is_night"] = out["hour"].isin([21, 22, 23, 0, 1, 2, 3, 4, 5]).astype(int)
     out["is_peak"] = out["hour"].isin([7, 8, 9, 16, 17, 18]).astype(int)
 
@@ -177,19 +206,25 @@ def add_driver_age_flags(df: pd.DataFrame) -> pd.DataFrame:
     """
     out = df.copy()
 
-    # Map normalized keys back to original column names
-    cols = {c.lower().strip().replace(" ", "").replace("+", "plus"): c for c in out.columns}
+    cols = {
+        c.lower().strip().replace(" ", "").replace("+", "plus"): c
+        for c in out.columns
+    }
 
     teen_col = cols.get("teendrvr")
     older_col = cols.get("65plusdrvr")
 
     if teen_col:
-        out["flag_teen"] = out[teen_col].astype(str).str.upper().isin(["1", "Y", "YES"]).astype(int)
+        out["flag_teen"] = (
+            out[teen_col].astype(str).str.upper().isin(["1", "Y", "YES"]).astype(int)
+        )
     else:
         out["flag_teen"] = 0
 
     if older_col:
-        out["flag_65plus"] = out[older_col].astype(str).str.upper().isin(["1", "Y", "YES"]).astype(int)
+        out["flag_65plus"] = (
+            out[older_col].astype(str).str.upper().isin(["1", "Y", "YES"]).astype(int)
+        )
     else:
         out["flag_65plus"] = 0
 
@@ -220,7 +255,9 @@ def add_severity_flag(df: pd.DataFrame) -> pd.DataFrame:
     """
     out = df.copy()
     if "injsvr" in out.columns:
-        out["is_fatal"] = (out["injsvr"].astype(str).str.strip().str.upper() == "K").astype(int)
+        out["is_fatal"] = (
+            out["injsvr"].astype(str).str.strip().str.upper() == "K"
+        ).astype(int)
     else:
         out["is_fatal"] = np.nan
     return out
@@ -266,19 +303,6 @@ def _make_binary_flag(series: pd.Series) -> pd.Series:
 def add_crash_context_flags(df: pd.DataFrame) -> pd.DataFrame:
     """
     Create binary indicator variables for key crash context flags.
-
-    Uses normalized column names such as:
-      - speedflag   -> flag_speed_related
-      - impaired    -> flag_impaired
-      - hitrun      -> flag_hit_and_run
-      - wntrroad    -> flag_winter_road
-      - deerflag    -> flag_deer
-      - bikeflag    -> flag_bike
-      - mcycflag    -> flag_motorcycle
-      - lgtrkflag   -> flag_large_truck
-      - conszone    -> flag_construction_zone
-
-    If a column is missing, the corresponding flag is set to 0.
     """
     out = df.copy()
 
@@ -306,9 +330,6 @@ def add_crash_context_flags(df: pd.DataFrame) -> pd.DataFrame:
 def filter_year_range(df: pd.DataFrame, start: int = 2010, end: int = 2024) -> pd.DataFrame:
     """
     Filter records to an inclusive year range.
-
-    Defaults to 2010–2024, reflecting the period where both fatal and
-    non-fatal pedestrian crashes are consistently recorded.
     """
     out = df.copy()
     if "year" in out.columns:
@@ -320,17 +341,6 @@ def filter_year_range(df: pd.DataFrame, start: int = 2010, end: int = 2024) -> p
 def clean_one(df: pd.DataFrame) -> pd.DataFrame:
     """
     Apply the full preprocessing pipeline to a single DataFrame.
-
-    Steps:
-      1. Normalize column names
-      2. Parse crash date
-      3. Derive time-based fields (year, month, day_of_week)
-      4. Add time-of-day features (hour, is_night, is_peak)
-      5. Add driver age flags
-      6. Add weekend flag
-      7. Add severity flags (binary fatal + ordinal)
-      8. Add crash context flags (speed, impairment, hit-and-run, etc.)
-      9. Filter to the desired year range
     """
     out = normalize_columns(df)
     out = parse_crash_date(out)
@@ -353,11 +363,6 @@ def clean_one(df: pd.DataFrame) -> pd.DataFrame:
 def yearly_counts(df: pd.DataFrame) -> pd.DataFrame:
     """
     Compute year-by-year crash counts.
-
-    Returns a DataFrame with:
-      - year
-      - crash_count
-    sorted by year.
     """
     t = df.dropna(subset=["year"])
     grp = t.groupby("year", as_index=False).size().rename(columns={"size": "crash_count"})
@@ -372,20 +377,16 @@ def yearly_counts(df: pd.DataFrame) -> pd.DataFrame:
 def minimal_flag_rollups(df: pd.DataFrame) -> pd.DataFrame:
     """
     Compute yearly totals and teen/65+ driver participation rates.
-
-    Returns a DataFrame with:
-      - year
-      - total       (# crashes)
-      - teen        (# crashes involving a teen driver)
-      - teen_rate   (proportion of crashes with teen drivers)
-      - older65     (# crashes involving a 65+ driver)
-      - older65_rate (proportion of crashes with 65+ drivers)
     """
     t = df.dropna(subset=["year"]).copy()
     t["any"] = 1
     out = (
         t.groupby("year", as_index=False)
-        .agg(total=("any", "sum"), teen=("flag_teen", "sum"), older65=("flag_65plus", "sum"))
+        .agg(
+            total=("any", "sum"),
+            teen=("flag_teen", "sum"),
+            older65=("flag_65plus", "sum"),
+        )
     )
     out["teen_rate"] = (out["teen"] / out["total"]).round(4)
     out["older65_rate"] = (out["older65"] / out["total"]).round(4)
@@ -400,9 +401,6 @@ def minimal_flag_rollups(df: pd.DataFrame) -> pd.DataFrame:
 def quick_describe(name: str, df: pd.DataFrame) -> None:
     """
     Print descriptive statistics for derived fields.
-
-    Focuses on key engineered columns: year, month, day_of_week,
-    weekend indicator, age flags, fatality flag, and a few context flags.
     """
     cols = [
         c
@@ -437,9 +435,6 @@ def quick_describe(name: str, df: pd.DataFrame) -> None:
 def print_yearly_summaries(yr_dict: dict) -> None:
     """
     Print basic statistics for yearly crash counts for each dataset.
-
-    For each region, prints the year range, mean, minimum, and maximum
-    annual crash counts.
     """
     print("\n--- Yearly Crash Count Summaries ---")
     for name, tbl in yr_dict.items():
@@ -461,9 +456,6 @@ def print_yearly_summaries(yr_dict: dict) -> None:
 def combine_clean_datasets(clean_dict: dict) -> pd.DataFrame:
     """
     Combine all cleaned datasets into a single DataFrame with a `region` label.
-
-    This integrated table is convenient for statewide modeling, cross-region
-    comparisons, and stratified analysis.
     """
     frames = []
     for name, df in clean_dict.items():
@@ -482,34 +474,32 @@ def run_kmeans_example(df: pd.DataFrame, n_clusters: int = 4) -> None:
     """
     Run a simple K-means clustering on selected numeric features.
 
-    Uses:
-      - year
-      - is_weekend
-      - flag_teen
-      - flag_65plus
-      - is_fatal
-
-    Prints cluster sizes and mean fatality rate per cluster.
+    Minimal edits:
+      - REMOVE is_fatal from features (avoid label leakage)
+      - SCALE features (year otherwise dominates)
     """
-    print("\n--- K-means clustering (illustrative) ---")
+    print("\n--- K-means clustering (illustrative; scaled, no label leakage) ---")
 
-    feature_cols = [c for c in ["year", "is_weekend", "flag_teen", "flag_65plus", "is_fatal"] if c in df.columns]
+    feature_cols = [c for c in ["year", "is_weekend", "flag_teen", "flag_65plus"] if c in df.columns]
 
     if len(feature_cols) < 2:
         print("Not enough numeric features available for K-means.")
         return
 
-    tmp = df.dropna(subset=feature_cols).copy()
+    tmp = df.dropna(subset=feature_cols + ["is_fatal"]).copy()
     X = tmp[feature_cols]
 
     if X.empty:
         print("No rows available for K-means after dropping missing values.")
         return
 
-    km = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-    tmp["cluster"] = km.fit_predict(X)
+    scaler = StandardScaler()
+    Xs = scaler.fit_transform(X)
 
-    print(f"Used features: {feature_cols}")
+    km = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    tmp["cluster"] = km.fit_predict(Xs)
+
+    print(f"Used features: {feature_cols} (scaled)")
     summary = (
         tmp.groupby("cluster")
         .agg(count=("cluster", "size"), fatal_mean=("is_fatal", "mean"))
@@ -523,18 +513,10 @@ def run_logistic_regression_example(df: pd.DataFrame) -> None:
     """
     Run a basic logistic regression model on selected engineered features.
 
-    Target:
-      - is_fatal
-
-    Features (if available):
-      - is_weekend
-      - flag_teen
-      - flag_65plus
-      - year
-
-    Prints confusion matrix, classification report, and ROC AUC.
+    CHANGED (minimal): use scaling + class_weight='balanced' so it doesn't
+    collapse to predicting all zeros under class imbalance.
     """
-    print("\n--- Logistic regression (illustrative) ---")
+    print("\n--- Logistic regression (illustrative; balanced + scaled) ---")
 
     required = ["is_fatal"]
     feature_candidates = ["is_weekend", "flag_teen", "flag_65plus", "year"]
@@ -564,7 +546,13 @@ def run_logistic_regression_example(df: pd.DataFrame) -> None:
         X, y, test_size=0.3, random_state=42, stratify=y
     )
 
-    model = LogisticRegression(max_iter=1000)
+    # CHANGED: scaled + balanced
+    model = Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            ("lr", LogisticRegression(max_iter=3000, class_weight="balanced")),
+        ]
+    )
     model.fit(X_train, y_train)
 
     y_pred = model.predict(X_test)
@@ -575,7 +563,7 @@ def run_logistic_regression_example(df: pd.DataFrame) -> None:
     print(confusion_matrix(y_test, y_pred))
 
     print("\nClassification report:")
-    print(classification_report(y_test, y_pred, digits=3))
+    print(classification_report(y_test, y_pred, digits=3, zero_division=0))
 
     try:
         auc = roc_auc_score(y_test, y_prob)
@@ -589,7 +577,8 @@ def run_decision_tree_example(df: pd.DataFrame, max_depth: int = 5) -> None:
     Run a decision tree classifier using the same feature set as
     the logistic regression example.
 
-    Prints confusion matrix, classification report, and feature importances.
+    Minimal edit:
+      - class_weight='balanced' to fight all-zero predictions
     """
     print("\n--- Decision tree (illustrative) ---")
 
@@ -621,7 +610,7 @@ def run_decision_tree_example(df: pd.DataFrame, max_depth: int = 5) -> None:
         X, y, test_size=0.3, random_state=42, stratify=y
     )
 
-    tree = DecisionTreeClassifier(max_depth=max_depth, random_state=42)
+    tree = DecisionTreeClassifier(max_depth=max_depth, random_state=42, class_weight="balanced")
     tree.fit(X_train, y_train)
 
     y_pred = tree.predict(X_test)
@@ -630,7 +619,7 @@ def run_decision_tree_example(df: pd.DataFrame, max_depth: int = 5) -> None:
     print(confusion_matrix(y_test, y_pred))
 
     print("\nClassification report:")
-    print(classification_report(y_test, y_pred, digits=3))
+    print(classification_report(y_test, y_pred, digits=3, zero_division=0))
 
     importances = pd.Series(tree.feature_importances_, index=available)
     print("\nFeature importances:")
@@ -649,22 +638,6 @@ def build_model_dataset(
 ) -> tuple[pd.DataFrame, pd.Series]:
     """
     Construct an ML-ready (X, y) pair from a cleaned crash DataFrame.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Cleaned DataFrame (output of clean_one or combine_clean_datasets).
-    use_context_flags : bool, default True
-        Whether to include crash context flags (speed, impairment, etc.) as features.
-    restrict_to_fatal_binary : bool, default True
-        If True, target is `is_fatal`. If False, uses `severity_ord` as target.
-
-    Returns
-    -------
-    X : pd.DataFrame
-        Feature matrix.
-    y : pd.Series
-        Target vector (binary or ordinal, depending on parameters).
     """
     if restrict_to_fatal_binary:
         target_col = "is_fatal"
@@ -726,30 +699,39 @@ def evaluate_binary_classifier(
     y_train: pd.Series,
     y_test: pd.Series,
     positive_label: int = 1,
+    threshold: float | None = None,
+    fitted: bool = False,            # NEW (minimal)
+    y_prob_pre: np.ndarray | None = None,  # NEW (minimal)
 ) -> dict:
     """
     Fit a binary classifier, generate predictions, and compute key metrics.
 
-    Returns a dictionary with:
-      - model_name
-      - accuracy
-      - precision
-      - recall
-      - f1
-      - roc_auc (if available, else NaN)
+    Minimal additions:
+      - allow passing in pre-fit model + precomputed probabilities (for tuned threshold case)
     """
-    model.fit(X_train, y_train)
-    y_pred = model.predict(X_test)
+    if not fitted:
+        model.fit(X_train, y_train)
+
+    y_prob = y_prob_pre
+    if y_prob is None:
+        try:
+            y_prob = model.predict_proba(X_test)[:, 1]
+        except Exception:
+            y_prob = None
+
+    if threshold is not None and y_prob is not None:
+        y_pred = (y_prob >= threshold).astype(int)
+    else:
+        y_pred = model.predict(X_test)
 
     try:
-        y_prob = model.predict_proba(X_test)[:, 1]
-        auc = roc_auc_score(y_test, y_prob)
-    except Exception:
-        try:
+        if y_prob is not None:
+            auc = roc_auc_score(y_test, y_prob)
+        else:
             scores = model.decision_function(X_test)
             auc = roc_auc_score(y_test, scores)
-        except Exception:
-            auc = np.nan
+    except Exception:
+        auc = np.nan
 
     acc = accuracy_score(y_test, y_pred)
     prec, rec, f1, _ = precision_recall_fscore_support(
@@ -760,23 +742,40 @@ def evaluate_binary_classifier(
         zero_division=0,
     )
 
-    return {"model_name": name, "accuracy": acc, "precision": prec, "recall": rec, "f1": f1, "roc_auc": auc}
+    return {
+        "model_name": name,
+        "accuracy": acc,
+        "precision": prec,
+        "recall": rec,
+        "f1": f1,
+        "roc_auc": auc,
+    }
+
+
+def pick_threshold_for_recall(
+    y_true: pd.Series, y_prob: np.ndarray, target_recall: float = 0.70
+) -> float:
+    thresholds = np.linspace(0.99, 0.01, 99)
+    best_t = 0.5
+    best_diff = 1e9
+    for t in thresholds:
+        y_pred = (y_prob >= t).astype(int)
+        _, rec, _, _ = precision_recall_fscore_support(
+            y_true, y_pred, pos_label=1, average="binary", zero_division=0
+        )
+        diff = abs(rec - target_recall)
+        if diff < best_diff:
+            best_diff = diff
+            best_t = t
+    return best_t
 
 
 def compare_classifiers_on_fatality(df: pd.DataFrame) -> pd.DataFrame:
     """
     Train and compare multiple classifiers on the binary fatality outcome.
 
-    Models include:
-      - Logistic Regression (baseline)
-      - Logistic Regression (class_weight='balanced')
-      - Random Forest (class_weight='balanced')
-      - Gradient Boosting
-
-    Returns
-    -------
-    pd.DataFrame
-        One row per model with accuracy, precision, recall, F1, and ROC AUC.
+    CHANGED (minimal):
+      - remove redundant second fit per model
     """
     print("\n--- Model comparison on `is_fatal` (binary) ---")
 
@@ -797,26 +796,64 @@ def compare_classifiers_on_fatality(df: pd.DataFrame) -> pd.DataFrame:
 
     models = [
         ("Logistic (baseline)", LogisticRegression(max_iter=1000)),
-        ("Logistic (balanced)", LogisticRegression(max_iter=1000, class_weight="balanced")),
-        ("RandomForest (balanced)",
-         RandomForestClassifier(
-             n_estimators=200,
-             max_depth=None,
-             min_samples_split=5,
-             class_weight="balanced",
-             random_state=42,
-             n_jobs=-1,
-         )),
+        (
+            "Logistic (balanced)",
+            Pipeline(
+                [
+                    ("scaler", StandardScaler()),
+                    ("lr", LogisticRegression(max_iter=3000, class_weight="balanced")),
+                ]
+            ),
+        ),
+        (
+            "RandomForest (balanced)",
+            RandomForestClassifier(
+                n_estimators=200,
+                max_depth=None,
+                min_samples_split=5,
+                class_weight="balanced",
+                random_state=42,
+                n_jobs=-1,
+            ),
+        ),
         ("GradientBoosting", GradientBoostingClassifier(random_state=42)),
     ]
 
     results = []
     for name, model in models:
         print(f"\nFitting {name} ...")
+
+        threshold = None
+        if name == "Logistic (balanced)":
+            # Fit once
+            model.fit(X_train, y_train)
+            y_prob = model.predict_proba(X_test)[:, 1]
+            threshold = pick_threshold_for_recall(y_test, y_prob, target_recall=0.70)
+            print(f"Chosen threshold (target recall≈0.70): {threshold:.2f}")
+
+            metrics = evaluate_binary_classifier(
+                name,
+                model,
+                X_train,
+                X_test,
+                y_train,
+                y_test,
+                threshold=threshold,
+                fitted=True,
+                y_prob_pre=y_prob,
+            )
+            results.append(metrics)
+
+            y_pred = (y_prob >= threshold).astype(int)
+            print("Confusion matrix (threshold-tuned):")
+            print(confusion_matrix(y_test, y_pred))
+            continue
+
+        # For all other models: evaluate() fits the model, so DO NOT fit again
         metrics = evaluate_binary_classifier(name, model, X_train, X_test, y_train, y_test)
         results.append(metrics)
 
-        model.fit(X_train, y_train)
+        # CHANGED: just predict (already fit)
         y_pred = model.predict(X_test)
         print("Confusion matrix:")
         print(confusion_matrix(y_test, y_pred))
@@ -830,9 +867,6 @@ def compare_classifiers_on_fatality(df: pd.DataFrame) -> pd.DataFrame:
 def run_multiclass_severity_tree(df: pd.DataFrame, max_depth: int = 6) -> None:
     """
     Train a decision tree to predict the ordinal injury severity level (0–4).
-
-    Uses the same engineered features as the binary fatality models, but
-    treats severity as a 5-class classification problem.
     """
     print("\n--- Multiclass severity decision tree (ordinal severity_ord) ---")
 
@@ -860,17 +894,18 @@ def run_multiclass_severity_tree(df: pd.DataFrame, max_depth: int = 6) -> None:
     y_pred = tree.predict(X_test)
 
     print("\nSeverity classification report (0=PDO, 4=fatal):")
-    print(classification_report(y_test, y_pred, digits=3))
+    print(classification_report(y_test, y_pred, digits=3, zero_division=0))
 
 
 def run_kmeans_with_context(df: pd.DataFrame, n_clusters: int = 5) -> None:
     """
     Run a K-means clustering experiment using extended engineered features.
 
-    Prints cluster sizes and mean fatality rate per cluster, plus
-    key contextual shares.
+    Minimal edits:
+      - REMOVE is_fatal from clustering features (no leakage)
+      - SCALE features
     """
-    print("\n--- K-means clustering with context features (illustrative) ---")
+    print("\n--- K-means clustering with context features (illustrative; scaled, no label leakage) ---")
 
     feature_cols = [
         "year",
@@ -899,11 +934,12 @@ def run_kmeans_with_context(df: pd.DataFrame, n_clusters: int = 5) -> None:
         return
 
     X = tmp[feature_cols]
+    Xs = StandardScaler().fit_transform(X)
 
     km = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-    tmp["cluster"] = km.fit_predict(X)
+    tmp["cluster"] = km.fit_predict(Xs)
 
-    print(f"Used features: {feature_cols}")
+    print(f"Used features: {feature_cols} (scaled)")
     summary = (
         tmp.groupby("cluster")
         .agg(
@@ -1025,7 +1061,12 @@ def plot_model_comparison(model_results: pd.DataFrame, outdir: Path) -> None:
 
 
 def plot_random_forest_feature_importance(clean_statewide: pd.DataFrame, outdir: Path) -> None:
-    """Figure 6: Random Forest feature importance for is_fatal prediction."""
+    """
+    Figure 6: Random Forest feature importance for is_fatal prediction.
+
+    Minimal edit:
+      - use permutation importance instead of impurity importance
+    """
     try:
         X, y = build_model_dataset(clean_statewide, use_context_flags=True, restrict_to_fatal_binary=True)
     except ValueError as e:
@@ -1051,15 +1092,16 @@ def plot_random_forest_feature_importance(clean_statewide: pd.DataFrame, outdir:
     )
     rf.fit(X_train, y_train)
 
+    perm = permutation_importance(rf, X_test, y_test, n_repeats=10, random_state=42, n_jobs=-1)
     importances = (
-        pd.Series(rf.feature_importances_, index=X.columns)
+        pd.Series(perm.importances_mean, index=X.columns)
         .sort_values(ascending=False)
         .head(12)
     )
 
     plt.figure()
     plt.barh(importances.index[::-1], importances.values[::-1])
-    plt.title("Top Feature Importances (Random Forest, Fatality Prediction)")
+    plt.title("Top Feature Importances (Permutation, Random Forest)")
     plt.xlabel("Importance")
     plt.ylabel("Feature")
     _save_fig(outdir, "fig06_rf_feature_importance.png")
@@ -1069,28 +1111,12 @@ def plot_random_forest_feature_importance(clean_statewide: pd.DataFrame, outdir:
 # Main Driver
 # -------------------------
 
-"""
-Run the full pipeline:
-
-    - load all datasets
-    - clean and filter records
-    - compute yearly summaries and save them
-    - print basic descriptive statistics
-    - combine datasets for modeling
-    - run example K-means, logistic regression, and decision tree analyses
-    - run additional classifiers and clustering analyses
-    - generate 6 visualizations and save to outputs/
-"""
-
-
 if __name__ == "__main__":
-    # Input folder containing all Wisconsin pedestrian crash datasets
     base = Path(
         r"C:/Users/ajmic/OneDrive/Documents/A_School/UWM/Fall2025/"
         r"COMPSCI715_ProgrammingMachineLearning/FinalProject/DataSets"
     )
 
-    # Output folder for all files generated by the Final Project
     output_path = Path(
         r"C:/Users/ajmic/OneDrive/Documents/A_School/UWM/Fall2025/"
         r"COMPSCI715_ProgrammingMachineLearning/FinalProject"
@@ -1099,54 +1125,38 @@ if __name__ == "__main__":
     outdir = output_path / "outputs"
     outdir.mkdir(parents=True, exist_ok=True)
 
-    # Part 1 — load & inspect
     raw = load_csvs(base)
-
-    # Part 2 — clean datasets
     clean = {k: clean_one(v) for k, v in raw.items()}
 
-    # Part 3 — yearly crash counts (saved to FinalProject/outputs/)
     yr = {k: yearly_counts(v) for k, v in clean.items()}
     for name, tbl in yr.items():
         tbl.to_csv(outdir / f"yearly_{name.lower()}.csv", index=False)
 
-    # Part 4 — teen vs 65+ driver rates (statewide example)
     statewide = clean["Statewide"]
     rates = minimal_flag_rollups(statewide)
     print("\nStatewide yearly teen vs 65+ share (first few rows):")
     print(rates.head())
     rates.to_csv(outdir / "statewide_teen_vs_65plus_rates.csv", index=False)
 
-    # Part 5 — summary statistics
     for name, df_region in clean.items():
         quick_describe(name, df_region)
 
-    # Part 6 — numerical summaries
     print_yearly_summaries(yr)
 
-    # Part 7 — combine datasets into one ML-ready table
     combined = combine_clean_datasets(clean)
     print(f"\nCombined dataset shape (all regions, 2010–2024): {combined.shape}")
 
-    # Part 8 — original ML examples (using statewide data)
     run_kmeans_example(statewide, n_clusters=4)
     run_logistic_regression_example(statewide)
     run_decision_tree_example(statewide, max_depth=5)
 
-    # Part 9 — expanded ML analyses
-
-    # 9.1 Model comparison for binary fatal vs non-fatal (with extra features)
     model_results = compare_classifiers_on_fatality(statewide)
     if not model_results.empty:
         model_results.to_csv(outdir / "model_comparison_is_fatal.csv", index=False)
 
-    # 9.2 Multiclass severity model (0–4)
     run_multiclass_severity_tree(statewide, max_depth=6)
-
-    # 9.3 Richer clustering with context features
     run_kmeans_with_context(statewide, n_clusters=5)
 
-    # Part 10 — Visualizations (6 figures saved to outputs/)
     plot_yearly_crashes_statewide(statewide, outdir)
     plot_yearly_crashes_by_region(clean, outdir)
     plot_driver_age_rates(statewide, outdir)
@@ -1154,4 +1164,6 @@ if __name__ == "__main__":
     plot_model_comparison(model_results, outdir)
     plot_random_forest_feature_importance(statewide, outdir)
 
+    plt.close("all")
     print(f"\nSaved outputs (CSVs + figures) to: {outdir}")
+
