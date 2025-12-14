@@ -110,13 +110,10 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 def parse_crash_date(df: pd.DataFrame) -> pd.DataFrame:
     """
     Identify and parse a crash date column into a unified `crash_date` field.
-
-    CHANGED (minimal): prefer a prioritized list of common date columns first,
-    then fall back to the broader heuristic search.
     """
     out = df.copy()
 
-    # CHANGED: prioritize likely date fields (after normalize_columns)
+    # prioritize likely date fields (after normalize_columns)
     preferred = [
         "crash_date",
         "crshdate",
@@ -133,7 +130,7 @@ def parse_crash_date(df: pd.DataFrame) -> pd.DataFrame:
             break
 
     if chosen is None:
-        # fallback heuristic (kept from your version, but slightly tightened)
+        # fallback heuristic
         candidates = [
             c for c in out.columns
             if ("date" in c) or c.endswith("_dt")
@@ -473,10 +470,6 @@ def combine_clean_datasets(clean_dict: dict) -> pd.DataFrame:
 def run_kmeans_example(df: pd.DataFrame, n_clusters: int = 4) -> None:
     """
     Run a simple K-means clustering on selected numeric features.
-
-    Minimal edits:
-      - REMOVE is_fatal from features (avoid label leakage)
-      - SCALE features (year otherwise dominates)
     """
     print("\n--- K-means clustering (illustrative; scaled, no label leakage) ---")
 
@@ -512,9 +505,6 @@ def run_kmeans_example(df: pd.DataFrame, n_clusters: int = 4) -> None:
 def run_logistic_regression_example(df: pd.DataFrame) -> None:
     """
     Run a basic logistic regression model on selected engineered features.
-
-    CHANGED (minimal): use scaling + class_weight='balanced' so it doesn't
-    collapse to predicting all zeros under class imbalance.
     """
     print("\n--- Logistic regression (illustrative; balanced + scaled) ---")
 
@@ -546,7 +536,6 @@ def run_logistic_regression_example(df: pd.DataFrame) -> None:
         X, y, test_size=0.3, random_state=42, stratify=y
     )
 
-    # CHANGED: scaled + balanced
     model = Pipeline(
         [
             ("scaler", StandardScaler()),
@@ -576,9 +565,6 @@ def run_decision_tree_example(df: pd.DataFrame, max_depth: int = 5) -> None:
     """
     Run a decision tree classifier using the same feature set as
     the logistic regression example.
-
-    Minimal edit:
-      - class_weight='balanced' to fight all-zero predictions
     """
     print("\n--- Decision tree (illustrative) ---")
 
@@ -706,8 +692,7 @@ def evaluate_binary_classifier(
     """
     Fit a binary classifier, generate predictions, and compute key metrics.
 
-    Minimal additions:
-      - allow passing in pre-fit model + precomputed probabilities (for tuned threshold case)
+    allow passing in pre-fit model + precomputed probabilities (for tuned threshold case)
     """
     if not fitted:
         model.fit(X_train, y_train)
@@ -773,9 +758,6 @@ def pick_threshold_for_recall(
 def compare_classifiers_on_fatality(df: pd.DataFrame) -> pd.DataFrame:
     """
     Train and compare multiple classifiers on the binary fatality outcome.
-
-    CHANGED (minimal):
-      - remove redundant second fit per model
     """
     print("\n--- Model comparison on `is_fatal` (binary) ---")
 
@@ -900,10 +882,6 @@ def run_multiclass_severity_tree(df: pd.DataFrame, max_depth: int = 6) -> None:
 def run_kmeans_with_context(df: pd.DataFrame, n_clusters: int = 5) -> None:
     """
     Run a K-means clustering experiment using extended engineered features.
-
-    Minimal edits:
-      - REMOVE is_fatal from clustering features (no leakage)
-      - SCALE features
     """
     print("\n--- K-means clustering with context features (illustrative; scaled, no label leakage) ---")
 
@@ -1063,9 +1041,6 @@ def plot_model_comparison(model_results: pd.DataFrame, outdir: Path) -> None:
 def plot_random_forest_feature_importance(clean_statewide: pd.DataFrame, outdir: Path) -> None:
     """
     Figure 6: Random Forest feature importance for is_fatal prediction.
-
-    Minimal edit:
-      - use permutation importance instead of impurity importance
     """
     try:
         X, y = build_model_dataset(clean_statewide, use_context_flags=True, restrict_to_fatal_binary=True)
